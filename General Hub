@@ -1,0 +1,2698 @@
+-- ==========================================
+-- SCRIPT FULL OPTIMIZED: ESP + TWEEN + SETTING
+-- ==========================================
+
+if getgenv().closewithnohub and type(getgenv().closewithnohub.CloseFunction) == "function" then
+    pcall(getgenv().closewithnohub.CloseFunction)
+end
+
+getgenv().closewithnohub = {}
+
+local RayLib = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
+local LocalPlayer = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- CACHE SPEED GỐC VÀO RAM KHI KHỞI ĐỘNG
+local originalWalkSpeed = 16
+local originalJumpPower = 50
+
+local function cacheOriginalStats()
+    pcall(function()
+        local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            originalWalkSpeed = hum.WalkSpeed
+            originalJumpPower = hum.JumpPower
+        end
+    end)
+end
+cacheOriginalStats()
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    cacheOriginalStats()
+end)
+
+local EspConfig = {
+    PlayersEnabled = false,
+    NpcEnabled = false,
+    ItemsEnabled = false,
+    EspAllItemsEnabled = false,
+    HitboxEnabled = false,
+    HurtboxEnabled = false,
+    SelectedEspItem = "",
+    ExtraLookEnabled = false,
+    ExtraLookLength = 0,
+    NoclipEnabled = false,
+    EspRange = 1000,
+    ScriptRunning = true,
+    ActiveHighlights = {},
+    ActiveTags = {},
+    ActiveHitboxes = {},
+    ActiveHurtboxes = {},
+    
+    SelectedPlayer = "",
+    SelectedItem = "",
+    SelectedNpc = "",
+    SelectedEntity = "",
+
+    TweenSelectedPlayer = "",
+    TweenSelectedNpc = "",
+    TweenSelectedEntity = "",
+    TweenSelectedItem = "",
+
+    WalkSpeedEnabled = false,
+    WalkSpeedValue = 1,
+    JumpPowerEnabled = false,
+    JumpPowerValue = 1,
+    FlyEnabled = false,
+    FlySpeedValue = 1,
+    FlyMode = "Fly 1",
+    
+    -- CẤU HÌNH NO DROP & FLYOFF
+    nodrop = false,
+    flyoff = false,
+
+    -- CHỈ GIỮ LẠI PHÍM TẮT FLY
+    FlyKeyBind = Enum.KeyCode.Q,
+
+    -- CẤU HÌNH ANTI-AFK (MẶC ĐỊNH TẮT, 15 PHÚT)
+    AntiAfkEnabled = false,
+
+    FullbrightEnabled = false,
+    CamUnlockEnabled = false,
+    HeldToolCanCollide = false,
+    PlayerCanTouch = true, -- Mặc định bật CanTouch
+    
+    NpcExpandHitboxEnabled = false,
+    NpcHitboxSize = 10,
+
+    -- FAKE PLAYER CONFIG
+    FakePlayerEnabled = false,
+    FakePlayerStuds = 5,
+
+    TweenSpeed = 300,
+    TweenLoopEnabled = false,
+
+    -- WAYPOINT CONFIG
+    Waypoints = {},
+    WaypointHighlights = {},
+    SelectedWaypoint = "",
+    WaypointTweenSpeed = 300,
+    WaypointTweenLoopEnabled = false,
+}
+
+local Config = EspConfig
+local OriginalNpcSizes = {}
+local currentTween = nil
+local tweenLoopConnection = nil
+
+-- BIẾN ANTI-AFK TOÀN CỤC
+local antiAfkTimer = 0
+local AFK_TIME_LIMIT = 15 * 60 -- 15 phút tính bằng giây
+
+-- FAKE PLAYER BIẾN TOÀN CỤC
+local fakePlayerDummy = nil
+local fakePlayerConnection = nil
+
+-- BIẾN NO DROP PART
+local noDropPart = nil
+
+--------------------------------------------------------------------------------
+-- METATABLE HOOKING (BLOCK LOCKCAM ENGINE)
+--------------------------------------------------------------------------------
+local oldNewIndex
+if hookmetamethod then
+    oldNewIndex = hookmetamethod(game, "__newindex", newcclosure(function(self, key, value)
+        if Config.CamUnlockEnabled and not checkcaller() then
+            if self == LocalPlayer then
+                if key == "CameraMode" and value == Enum.CameraMode.LockFirstPerson then
+                    return nil
+                elseif key == "CameraMaxZoomDistance" and (type(value) == "number" and value < 10) then
+                    return nil
+                end
+            end
+        end
+        return oldNewIndex(self, key, value)
+    end))
+end
+
+local CachedHitboxTargets = {}
+
+local flyConnection = nil
+local keyInputConnection = nil
+local noclipConnection = nil
+local fullbrightConnection = nil
+local noclipSavedStates = {}
+
+local originalBrightness = Lighting.Brightness
+local originalClockTime = Lighting.ClockTime
+local originalFogEnd = Lighting.FogEnd
+local originalGlobalShadows = Lighting.GlobalShadows
+local originalMaxZoom = LocalPlayer.CameraMaxZoomDistance
+
+local Window = RayLib:CreateWindow({
+    Name = "Esp & Tool Hub",
+    LoadingTitle = "Tool Hub",
+    LoadingSubtitle = "By Nuh Uh & Fixed",
+    ConfigurationSaving = { Enabled = false },
+    Discord = { Enabled = false },
+    KeySystem = false,
+})
+
+local HomeTab = Window:CreateTab("🏠 Home (ESP & Visual)", 4483362458)
+local MoveTab = Window:CreateTab("⚡ Speed, Jump & No Drop", 4483362458)
+local TeleportTab = Window:CreateTab("📍 Teleport", 4483362458)
+local WaypointTab = Window:CreateTab("📌 Waypoint", 4483362458)
+local TweenTab = Window:CreateTab("✈️ Tween (Di Chuyển Mượt)", 4483362458)
+local SettingTab = Window:CreateTab("⚙️ Setting", 4483362458)
+
+local function GetPlayerList()
+    local list = {}
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            table.insert(list, p.Name)
+        end
+    end
+    if #list == 0 then table.insert(list, "Không có ai") end
+    return list
+end
+
+local function GetItemList()
+    local list = {}
+    local seen = {}
+    local function scanContainer(container)
+        if not container then return end
+        for _, item in pairs(container:GetChildren()) do
+            if item:IsA("Tool") and not seen[item.Name] then
+                seen[item.Name] = true
+                table.insert(list, item.Name)
+            end
+        end
+    end
+    scanContainer(LocalPlayer.Backpack)
+    scanContainer(LocalPlayer.Character)
+    
+    pcall(function()
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:IsA("Tool") and not seen[obj.Name] then
+                seen[obj.Name] = true
+                table.insert(list, obj.Name)
+            end
+        end
+    end)
+
+    if #list == 0 then table.insert(list, "Không có item nào") end
+    return list
+end
+
+local function IsEntity(model)
+    if not model or not model:IsA("Model") then return false end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+    
+    local isPlr = false
+    pcall(function()
+        if Players:GetPlayerFromCharacter(model) then isPlr = true end
+    end)
+    if isPlr then return false end
+
+    if model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart then
+        return true
+    end
+    return false
+end
+
+local function IsNpc(model)
+    if not model or not model:IsA("Model") then return false end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+    
+    local isPlr = false
+    pcall(function()
+        if Players:GetPlayerFromCharacter(model) then isPlr = true end
+    end)
+    if isPlr then return false end
+
+    local parentName = model.Parent and string.lower(model.Parent.Name) or ""
+    if parentName:match("npc") or parentName:match("quest") or parentName:match("character") or parentName:match("giver") then
+        return true
+    end
+
+    local hrp = model:FindFirstChild("HumanoidRootPart")
+    if hrp and hrp.Anchored then return true end
+
+    return false
+end
+
+local function GetNpcList()
+    local list = {}
+    pcall(function()
+        for _, v in pairs(workspace:GetDescendants()) do
+            if v:IsA("Model") and (IsNpc(v) or IsEntity(v)) then
+                if not table.find(list, v.Name) then table.insert(list, v.Name) end
+            end
+        end
+    end)
+    if #list == 0 then table.insert(list, "Không có NPC/Mob") end
+    return list
+end
+
+-- ==========================================
+-- NO DROP LOGIC FUNCTION (CẬP NHẬT SHIFT -5 STUDS)
+-- ==========================================
+local function updateNoDrop()
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then
+        if noDropPart then noDropPart:Destroy() noDropPart = nil end
+        return
+    end
+
+    local hrp = character.HumanoidRootPart
+
+    -- Nếu nodrop bật và flyoff đang tắt thì duy trì part dưới chân
+    if Config.nodrop and not Config.flyoff then
+        if not noDropPart or not noDropPart.Parent then
+            noDropPart = Instance.new("Part")
+            noDropPart.Name = "NoDropPlatform"
+            noDropPart.Size = Vector3.new(4, 1, 4)
+            noDropPart.Anchored = true
+            noDropPart.CanCollide = true
+            noDropPart.Transparency = 0.5 
+            noDropPart.BrickColor = BrickColor.new("Bright blue")
+            noDropPart.Parent = workspace
+        end
+        
+        -- Yêu cầu 1: Nhấn shift thì tp block xuống thêm 5 stud ở no drop
+        local dropOffset = 3.5
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
+            dropOffset = 8.5 -- 3.5 + 5 studs sâu xuống dưới
+        end
+        
+        noDropPart.Position = hrp.Position - Vector3.new(0, dropOffset, 0)
+    else
+        if noDropPart then
+            noDropPart:Destroy()
+            noDropPart = nil
+        end
+    end
+end
+
+-- ==========================================
+-- FAKE PLAYER FUNCTIONS
+-- ==========================================
+local function RemoveFakePlayer()
+    if fakePlayerConnection then
+        fakePlayerConnection:Disconnect()
+        fakePlayerConnection = nil
+    end
+    if fakePlayerDummy then
+        pcall(function()
+            fakePlayerDummy:Destroy()
+        end)
+        fakePlayerDummy = nil
+    end
+end
+
+local function CreateFakePlayer()
+    RemoveFakePlayer()
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+
+    local dummy = Instance.new("Model")
+    dummy.Name = "ClientFakePlayerDummy"
+    
+    local hrp = Instance.new("Part")
+    hrp.Name = "HumanoidRootPart"
+    hrp.Size = Vector3.new(2, 2, 1)
+    hrp.Transparency = 1 
+    hrp.CanCollide = false
+    hrp.Anchored = true
+    hrp.CFrame = char.HumanoidRootPart.CFrame + Vector3.new(0, Config.FakePlayerStuds, 0)
+    hrp.Parent = dummy
+
+    local hum = Instance.new("Humanoid")
+    hum.Parent = dummy
+    
+    dummy.Parent = workspace
+    fakePlayerDummy = dummy
+
+    fakePlayerConnection = RunService.RenderStepped:Connect(function()
+        if not Config.FakePlayerEnabled or not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            RemoveFakePlayer()
+            return
+        end
+
+        local myHrp = LocalPlayer.Character.HumanoidRootPart
+        if fakePlayerDummy and fakePlayerDummy:FindFirstChild("HumanoidRootPart") then
+            fakePlayerDummy.HumanoidRootPart.CFrame = myHrp.CFrame + Vector3.new(0, Config.FakePlayerStuds, 0)
+        end
+    end)
+end
+
+-- ==========================================
+-- WAYPOINT FUNCTIONS
+-- ==========================================
+local function GetWaypointList()
+    local list = {}
+    for name, _ in pairs(Config.Waypoints) do
+        table.insert(list, name)
+    end
+    if #list == 0 then table.insert(list, "Chưa có waypoint") end
+    return list
+end
+
+local function ShowWaypointHighlight(name, cf)
+    if Config.WaypointHighlights[name] then
+        Config.WaypointHighlights[name]:Destroy()
+        Config.WaypointHighlights[name] = nil
+    end
+
+    local part = Instance.new("Part")
+    part.Name = "WaypointPart_" .. name
+    part.Size = Vector3.new(2, 500, 2)
+    part.CFrame = cf + Vector3.new(0, 250, 0)
+    part.Anchored = true
+    part.CanCollide = false
+    part.Transparency = 1
+    part.Parent = workspace
+
+    local hl = Instance.new("Highlight")
+    hl.FillColor = Color3.fromRGB(255, 165, 0)
+    hl.FillTransparency = 0.4
+    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+    hl.OutlineTransparency = 0
+    hl.Adornee = part
+    hl.Parent = part
+
+    Config.WaypointHighlights[name] = part
+end
+
+local function CreateEspTag(model, color, customPrefix)
+    if not model or not model.Parent then return end
+    if Config.ActiveTags[model] then return end
+    
+    local head = model:FindFirstChild("Head") or model:FindFirstChildWhichIsA("BasePart")
+    if not head then return end
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Size = UDim2.new(0, 200, 0, 50)
+    billboard.AlwaysOnTop = true
+    billboard.ExtentsOffset = Vector3.new(0, 3, 0)
+    billboard.Adornee = head
+    billboard.Name = "EspTag"
+
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(1, 0, 1, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.TextColor3 = color
+    textLabel.TextSize = 14
+    textLabel.Font = Enum.Font.SourceSansBold
+    textLabel.TextStrokeTransparency = 0
+    textLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    
+    local prefix = customPrefix and (customPrefix .. " ") or ""
+    textLabel.Text = prefix .. model.Name .. " - Calculating..."
+    textLabel.Parent = billboard
+
+    billboard.Parent = head
+    Config.ActiveTags[model] = {Billboard = billboard, Label = textLabel, Prefix = prefix}
+end
+
+local function ApplyHighlight(model, color)
+    if not model then return end
+    if Config.ActiveHighlights[model] then return end
+
+    local hl = Instance.new("Highlight")
+    hl.FillColor = color
+    hl.FillTransparency = 0.5
+    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+    hl.OutlineTransparency = 0
+    hl.Name = "EspHighlight"
+    hl.Adornee = model
+    hl.Parent = model
+
+    Config.ActiveHighlights[model] = hl
+end
+
+local function ClearEspType(targetTable)
+    for model, obj in pairs(targetTable) do
+        if obj then
+            pcall(function()
+                if obj:IsA("Highlight") or obj:IsA("BoxHandleAdornment") then obj:Destroy()
+                elseif obj.Billboard then obj.Billboard:Destroy()
+                elseif type(obj) == "userdata" and obj.Destroy then obj:Destroy() end
+            end)
+        end
+    end
+    table.clear(targetTable)
+end
+
+local function RestoreOriginalNpcHitboxes()
+    for hrp, originalSize in pairs(OriginalNpcSizes) do
+        if hrp and hrp.Parent then
+            pcall(function()
+                hrp.Size = originalSize
+                hrp.Transparency = 1
+                hrp.CanCollide = true
+            end)
+        end
+    end
+    table.clear(OriginalNpcSizes)
+end
+
+local function CleanupAllWorkspaceEsp()
+    ClearEspType(Config.ActiveHighlights)
+    ClearEspType(Config.ActiveTags)
+    ClearEspType(Config.ActiveHitboxes)
+    ClearEspType(Config.ActiveHurtboxes)
+    RestoreOriginalNpcHitboxes()
+    table.clear(CachedHitboxTargets)
+    RemoveFakePlayer()
+    
+    if noDropPart then
+        noDropPart:Destroy()
+        noDropPart = nil
+    end
+    
+    for _, part in pairs(Config.WaypointHighlights) do
+        if part then part:Destroy() end
+    end
+    Config.WaypointHighlights = {}
+
+    if currentTween then
+        currentTween:Cancel()
+        currentTween = nil
+    end
+    if tweenLoopConnection then
+        tweenLoopConnection:Disconnect()
+        tweenLoopConnection = nil
+    end
+    pcall(function()
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj.Name == "EspHighlight" or obj.Name == "EspTag" or obj.Name == "HitboxAdornment" or obj.Name == "HurtboxAdornment" or obj.Name == "NoDropPlatform" or string.match(obj.Name, "WaypointPart_") then 
+                obj:Destroy() 
+            end
+        end
+    end)
+end
+
+local function StopTween()
+    local wasRunning = false
+    if tweenLoopConnection then
+        tweenLoopConnection:Disconnect()
+        tweenLoopConnection = nil
+        wasRunning = true
+    end
+    if currentTween then
+        currentTween:Cancel()
+        currentTween = nil
+        wasRunning = true
+    end
+    if wasRunning then
+        RayLib:Notify({Title = "🛑 Tween", Content = "Đã dừng quá trình Tween!", Duration = 1.5})
+    end
+    return wasRunning
+end
+
+local function StartTweenTo(targetCFrameFunc, targetName)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        RayLib:Notify({Title = "Tween Lỗi", Content = "Không tìm thấy nhân vật của bạn!", Duration = 1.5})
+        return
+    end
+
+    if currentTween or tweenLoopConnection then
+        StopTween()
+        return
+    end
+
+    local initialCF = targetCFrameFunc()
+    if not initialCF then
+        RayLib:Notify({Title = "Tween Lỗi", Content = "Không tìm thấy vị trí mục tiêu!", Duration = 1.5})
+        return
+    end
+
+    if Config.TweenLoopEnabled then
+        RayLib:Notify({Title = "✈️ Tween Loop", Content = "Bắt đầu bám đuổi liên tục: " .. tostring(targetName), Duration = 2})
+        tweenLoopConnection = RunService.RenderStepped:Connect(function()
+            local targetCF = targetCFrameFunc()
+            if not targetCF or not hrp or not hrp.Parent then
+                StopTween()
+                return
+            end
+            local dist = (hrp.Position - targetCF.Position).Magnitude
+            if dist > 3 then
+                local speed = Config.TweenSpeed
+                local dir = (targetCF.Position - hrp.Position).Unit
+                hrp.CFrame = hrp.CFrame + dir * math.min(speed * RunService.RenderStepped:Wait(), dist)
+            end
+        end)
+    else
+        local distance = (hrp.Position - initialCF.Position).Magnitude
+        local speed = Config.TweenSpeed
+        local timeVal = math.max(distance / speed, 0.1)
+
+        local tweenInfo = TweenInfo.new(timeVal, Enum.EasingStyle.Linear)
+        currentTween = TweenService:Create(hrp, tweenInfo, {CFrame = initialCF + Vector3.new(0, 3, 0)})
+        
+        currentTween:Play()
+        RayLib:Notify({Title = "✈️ Tweening", Content = "Đang bay tới: " .. tostring(targetName) .. " (" .. math.floor(distance) .. "m)", Duration = 2})
+
+        currentTween.Completed:Connect(function(playbackState)
+            if playbackState == Enum.PlaybackState.Completed then
+                RayLib:Notify({Title = "✅ Hoàn Thành", Content = "Đã đến nơi!", Duration = 1.5})
+            end
+            currentTween = nil
+        end)
+    end
+end
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if not Config.ScriptRunning then break end
+
+        if Config.NpcExpandHitboxEnabled then
+            pcall(function()
+                for _, v in pairs(workspace:GetDescendants()) do
+                    if v:IsA("Model") and (IsEntity(v) or IsNpc(v)) then
+                        local hrp = v:FindFirstChild("HumanoidRootPart") or v.PrimaryPart
+                        if hrp and hrp:IsA("BasePart") then
+                            if not OriginalNpcSizes[hrp] then
+                                OriginalNpcSizes[hrp] = hrp.Size
+                            end
+                            hrp.Size = Vector3.new(Config.NpcHitboxSize, Config.NpcHitboxSize, Config.NpcHitboxSize)
+                            hrp.Transparency = 0.7
+                            hrp.CanCollide = false
+                        end
+                    end
+                end
+            end)
+        end
+
+        if Config.HitboxEnabled then
+            local newTargets = {}
+            pcall(function()
+                for _, v in pairs(workspace:GetDescendants()) do
+                    if v:IsA("Model") and (IsEntity(v) or IsNpc(v)) then
+                        local isPlr = false
+                        pcall(function() if Players:GetPlayerFromCharacter(v) then isPlr = true end end)
+                        if not isPlr then
+                            table.insert(newTargets, v)
+                        end
+                    end
+                end
+            end)
+            CachedHitboxTargets = newTargets
+        end
+    end
+end)
+
+local function UpdateHitboxes()
+    if not Config.HitboxEnabled then
+        ClearEspType(Config.ActiveHitboxes)
+        return
+    end
+
+    local character = LocalPlayer.Character
+    local myHrp = character and character:FindFirstChild("HumanoidRootPart")
+    if not myHrp then
+        ClearEspType(Config.ActiveHitboxes)
+        return
+    end
+
+    for _, p in pairs(Players:GetPlayers()) do
+        if p.Character then
+            local char = p.Character
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local dist = math.floor((myHrp.Position - hrp.Position).Magnitude)
+                if p ~= LocalPlayer and dist <= Config.EspRange then
+                    if not Config.ActiveHitboxes[char] then
+                        local box = Instance.new("BoxHandleAdornment")
+                        box.Name = "HitboxAdornment"
+                        box.Adornee = hrp
+                        box.AlwaysOnTop = true
+                        box.ZIndex = 5
+                        box.Size = hrp.Size + Vector3.new(0.5, 0.5, 0.5)
+                        box.Color3 = Color3.fromRGB(0, 255, 0)
+                        box.Transparency = 0.5
+                        box.Parent = char
+                        Config.ActiveHitboxes[char] = box
+                    else
+                        local box = Config.ActiveHitboxes[char]
+                        if box and box.Parent then
+                            box.Size = hrp.Size + Vector3.new(0.5, 0.5, 0.5)
+                        end
+                    end
+                else
+                    if Config.ActiveHitboxes[char] then
+                        pcall(function() Config.ActiveHitboxes[char]:Destroy() end)
+                        Config.ActiveHitboxes[char] = nil
+                    end
+                end
+            end
+        end
+    end
+
+    for _, v in pairs(CachedHitboxTargets) do
+        if v and v.Parent then
+            local hrp = v:FindFirstChild("HumanoidRootPart") or v.PrimaryPart
+            if hrp then
+                local dist = math.floor((myHrp.Position - hrp.Position).Magnitude)
+                if dist <= Config.EspRange then
+                    if not Config.ActiveHitboxes[v] then
+                        local box = Instance.new("BoxHandleAdornment")
+                        box.Name = "HitboxAdornment"
+                        box.Adornee = hrp
+                        box.AlwaysOnTop = true
+                        box.ZIndex = 5
+                        box.Size = hrp.Size + Vector3.new(0.2, 0.2, 0.2)
+                        box.Color3 = Color3.fromRGB(0, 255, 100)
+                        box.Transparency = 0.5
+                        box.Parent = v
+                        Config.ActiveHitboxes[v] = box
+                    else
+                        local box = Config.ActiveHitboxes[v]
+                        if box and box.Parent then
+                            box.Size = hrp.Size + Vector3.new(0.2, 0.2, 0.2)
+                        end
+                    end
+                else
+                    if Config.ActiveHitboxes[v] then
+                        pcall(function() Config.ActiveHitboxes[v]:Destroy() end)
+                        Config.ActiveHitboxes[v] = nil
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function UpdateHurtboxes()
+    if not Config.HurtboxEnabled then
+        ClearEspType(Config.ActiveHurtboxes)
+        return
+    end
+
+    local char = LocalPlayer.Character
+    if not char then
+        ClearEspType(Config.ActiveHurtboxes)
+        return
+    end
+
+    local currentHurtboxTargets = {}
+    for _, child in pairs(char:GetChildren()) do
+        if child:IsA("Tool") then
+            currentHurtboxTargets[child] = true
+        end
+    end
+
+    for obj, _ in pairs(currentHurtboxTargets) do
+        if not Config.ActiveHurtboxes[obj] then
+            local handle = obj:FindFirstChild("Handle") or obj:FindFirstChildWhichIsA("BasePart")
+            if handle then
+                local box = Instance.new("BoxHandleAdornment")
+                box.Name = "HurtboxAdornment"
+                box.Adornee = handle
+                box.AlwaysOnTop = true
+                box.ZIndex = 6
+                box.Size = handle.Size + Vector3.new(0.3, 0.3, 0.3)
+                box.Color3 = Color3.fromRGB(255, 0, 0)
+                box.Transparency = 0.4
+                box.Parent = obj
+                Config.ActiveHurtboxes[obj] = box
+            end
+        else
+            local handle = obj:FindFirstChild("Handle") or obj:FindFirstChildWhichIsA("BasePart")
+            local box = Config.ActiveHurtboxes[obj]
+            if handle and box then
+                box.Size = handle.Size + Vector3.new(0.3, 0.3, 0.3)
+            end
+        end
+    end
+
+    for obj, box in pairs(Config.ActiveHurtboxes) do
+        if not obj or not obj.Parent or not currentHurtboxTargets[obj] then
+            pcall(function() box:Destroy() end)
+            Config.ActiveHurtboxes[obj] = nil
+        end
+    end
+end
+
+local function RefreshEspScans()
+    if not Config.ScriptRunning then return end
+    
+    local character = LocalPlayer.Character
+    local myHrp = character and character:FindFirstChild("HumanoidRootPart")
+    if not myHrp then return end
+
+    if Config.NpcEnabled then
+        pcall(function()
+            local validEntities = {}
+
+            for _, v in pairs(workspace:GetDescendants()) do
+                if v:IsA("Model") and v:FindFirstChildOfClass("Humanoid") and v.Parent then
+                    local isPlr = false
+                    pcall(function() if Players:GetPlayerFromCharacter(v) then isPlr = true end end)
+                    
+                    if not isPlr then
+                        local hrp = v:FindFirstChild("HumanoidRootPart") or v.PrimaryPart
+                        if hrp then
+                            local dist = math.floor((myHrp.Position - hrp.Position).Magnitude)
+                            if dist <= Config.EspRange then
+                                if IsNpc(v) or IsEntity(v) then
+                                    table.insert(validEntities, { Model = v, Distance = dist })
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            table.sort(validEntities, function(a, b) return a.Distance < b.Distance end)
+
+            local currentTopMap = {}
+            for i = 1, math.min(#validEntities, 31) do
+                currentTopMap[validEntities[i].Model] = true
+            end
+
+            for model, hl in pairs(Config.ActiveHighlights) do
+                local isPlr = false
+                pcall(function() if Players:GetPlayerFromCharacter(model) then isPlr = true end end)
+                if not isPlr and not model:IsA("Tool") then
+                    if not currentTopMap[model] or not model:IsDescendantOf(workspace) then
+                        pcall(function() hl:Destroy() end)
+                        Config.ActiveHighlights[model] = nil
+                        if Config.ActiveTags[model] then
+                            pcall(function() Config.ActiveTags[model].Billboard:Destroy() end)
+                            Config.ActiveTags[model] = nil
+                        end
+                    end
+                end
+            end
+
+            for i = 1, math.min(#validEntities, 31) do
+                local item = validEntities[i]
+                local v = item.Model
+                local dist = item.Distance
+                local color = Color3.fromRGB(0, 150, 255)
+                local prefix = "[NPC/Mob]"
+
+                ApplyHighlight(v, color)
+                CreateEspTag(v, color, prefix)
+                local tagData = Config.ActiveTags[v]
+                if tagData and tagData.Label then
+                    tagData.Label.Text = prefix .. " " .. v.Name .. " - " .. dist .. "m"
+                end
+            end
+        end)
+    end
+
+    if Config.ItemsEnabled or Config.EspAllItemsEnabled then
+        pcall(function()
+            for _, v in pairs(workspace:GetDescendants()) do
+                if v:IsA("Tool") and v.Parent ~= LocalPlayer.Backpack and v.Parent ~= LocalPlayer.Character then
+                    local isSelected = (Config.SelectedEspItem ~= "" and v.Name == Config.SelectedEspItem)
+                    
+                    if Config.EspAllItemsEnabled or (Config.ItemsEnabled and isSelected) then
+                        local handle = v:FindFirstChild("Handle") or v:FindFirstChildWhichIsA("BasePart")
+                        if handle then
+                            local dist = math.floor((myHrp.Position - handle.Position).Magnitude)
+                            if dist <= Config.EspRange then
+                                ApplyHighlight(v, Color3.fromRGB(255, 255, 0))
+                                CreateEspTag(v, Color3.fromRGB(255, 255, 0), "[Item]")
+                                local tagData = Config.ActiveTags[v]
+                                if tagData and tagData.Label then
+                                    tagData.Label.Text = "[Item] " .. v.Name .. " - " .. dist .. "m"
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end)
+    end
+end
+
+local function startFlying1()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    pcall(function()
+        local bodyGyro = Instance.new("BodyGyro", hrp)
+        local bodyVelocity = Instance.new("BodyVelocity", hrp)
+        bodyGyro.P = 9e4
+        bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        bodyGyro.CFrame = hrp.CFrame
+        bodyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+
+        flyConnection = RunService.RenderStepped:Connect(function()
+            if not Config.FlyEnabled or not Config.ScriptRunning then return end
+            local moveVec = Vector3.new(0, 0, 0)
+            local camCF = camera.CFrame
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveVec = moveVec + camCF.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveVec = moveVec - camCF.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveVec = moveVec - camCF.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveVec = moveVec + camCF.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveVec = moveVec + camCF.UpVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveVec = moveVec - camCF.UpVector end
+            
+            local actualFlySpeed = 16 * (Config.FlySpeedValue * 3)
+            bodyVelocity.Velocity = moveVec.Magnitude > 0 and moveVec.Unit * actualFlySpeed or Vector3.new(0, 0, 0)
+            bodyGyro.CFrame = camCF
+        end)
+    end)
+end
+
+local function startFlying2()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    pcall(function()
+        local bodyGyro = Instance.new("BodyGyro", hrp)
+        local bodyVelocity = Instance.new("BodyVelocity", hrp)
+        bodyGyro.P = 9e4
+        bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        bodyGyro.CFrame = hrp.CFrame
+        bodyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+
+        flyConnection = RunService.RenderStepped:Connect(function()
+            if not Config.FlyEnabled or not Config.ScriptRunning then return end
+            local moveVec = Vector3.new(0, 0, 0)
+            local camCF = camera.CFrame
+            
+            local flatLook = Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z).Unit
+            local flatRight = Vector3.new(camCF.RightVector.X, 0, camCF.RightVector.Z).Unit
+            
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveVec = moveVec + flatLook end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveVec = moveVec - flatLook end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveVec = moveVec - flatRight end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveVec = moveVec + flatRight end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveVec = moveVec + Vector3.new(0, 1, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveVec = moveVec - Vector3.new(0, 1, 0) end
+            
+            local actualFlySpeed = 16 * (Config.FlySpeedValue * 3)
+            bodyVelocity.Velocity = moveVec.Magnitude > 0 and moveVec.Unit * actualFlySpeed or Vector3.new(0, 0, 0)
+            bodyGyro.CFrame = CFrame.new(hrp.Position, hrp.Position + flatLook)
+        end)
+    end)
+end
+
+local function startFlying3()
+    -- Fly 3 dạng kết hợp Heartbeat chạy trực tiếp
+    flyConnection = RunService.Heartbeat:Connect(function()
+        if not Config.FlyEnabled or not Config.ScriptRunning then return end
+        
+        local character = LocalPlayer.Character
+        if not character then return end
+        
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        local myHrp = character:FindFirstChild("HumanoidRootPart")
+        
+        if myHrp and humanoid then
+            pcall(function()
+                local cam = workspace.CurrentCamera
+                local moveDir = Vector3.new(0, 0, 0)
+                
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + cam.CFrame.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - cam.CFrame.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - cam.CFrame.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + cam.CFrame.RightVector end
+                
+                myHrp.Velocity = moveDir * (16 * (Config.FlySpeedValue * 3))
+                humanoid.PlatformStand = true
+            end)
+        end
+    end)
+end
+
+local function startFlying4()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+
+    pcall(function()
+        local bodyGyro = Instance.new("BodyGyro", hrp)
+        local bodyVelocity = Instance.new("BodyVelocity", hrp)
+        bodyGyro.P = 100000
+        bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        bodyGyro.CFrame = hrp.CFrame
+        
+        bodyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        bodyVelocity.Velocity = Vector3.new(0, 0, 0)
+
+        hum.PlatformStand = true
+
+        flyConnection = RunService.RenderStepped:Connect(function()
+            if not Config.FlyEnabled or not Config.ScriptRunning then
+                hum.PlatformStand = false
+                return
+            end
+            
+            hum.PlatformStand = true
+            local moveVec = Vector3.new(0, 0, 0)
+            local camCF = camera.CFrame
+            
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveVec = moveVec + camCF.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveVec = moveVec - camCF.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveVec = moveVec - camCF.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveVec = moveVec + camCF.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveVec = moveVec + Vector3.new(0, 1, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveVec = moveVec - Vector3.new(0, 1, 0) end
+            
+            local actualFlySpeed = 16 * (Config.FlySpeedValue * 3.5)
+            if moveVec.Magnitude > 0 then
+                bodyVelocity.Velocity = moveVec.Unit * actualFlySpeed
+            else
+                bodyVelocity.Velocity = Vector3.new(0, 0.1, 0)
+            end
+            bodyGyro.CFrame = camCF
+        end)
+    end)
+end
+
+local function stopFlyingPhysics()
+    if flyConnection then
+        flyConnection:Disconnect()
+        flyConnection = nil
+    end
+    pcall(function()
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hrp then
+            for _, v in pairs(hrp:GetChildren()) do
+                if v:IsA("BodyGyro") or v:IsA("BodyVelocity") then v:Destroy() end
+            end
+        end
+        if hum then hum.PlatformStand = false end
+    end)
+end
+
+local function ToggleHubFly()
+    if not Config.ScriptRunning then return end
+    Config.FlyEnabled = not Config.FlyEnabled
+    
+    Config.flyoff = Config.FlyEnabled
+
+    if Config.FlyEnabled then
+        RayLib:Notify({Title = "Fly", Content = "Đã Bật Bay (" .. Config.FlyMode .. ")", Duration = 1.5})
+        if Config.FlyMode == "Fly 1" then startFlying1()
+        elseif Config.FlyMode == "Fly 2" then startFlying2()
+        elseif Config.FlyMode == "Fly 3" then startFlying3()
+        elseif Config.FlyMode == "Fly 4" then startFlying4() end
+    else
+        RayLib:Notify({Title = "Fly", Content = "Đã Tắt Bay", Duration = 1.5})
+        stopFlyingPhysics()
+    end
+end
+
+-- ==========================================
+-- RAYFIELD UI (TABS & CONTROLS)
+-- ==========================================
+
+HomeTab:CreateSection("👁️ Visual / ESP & Movement")
+
+HomeTab:CreateButton({
+    Name = "🟢 ESP PLAYERS",
+    Callback = function()
+        Config.PlayersEnabled = not Config.PlayersEnabled
+        if Config.PlayersEnabled then
+            RayLib:Notify({Title = "Esp Tool", Content = "Đã Bật Esp Player", Duration = 1.5})
+        else
+            for model, hl in pairs(Config.ActiveHighlights) do
+                local isPlr = false
+                pcall(function() if Players:GetPlayerFromCharacter(model) then isPlr = true end end)
+                if isPlr then
+                    pcall(function() hl:Destroy() end)
+                    Config.ActiveHighlights[model] = nil
+                end
+            end
+            for model, tagData in pairs(Config.ActiveTags) do
+                local isPlr = false
+                pcall(function() if Players:GetPlayerFromCharacter(model) then isPlr = true end end)
+                if isPlr then
+                    pcall(function() tagData.Billboard:Destroy() end)
+                    Config.ActiveTags[model] = nil
+                end
+            end
+            RayLib:Notify({Title = "Esp Tool", Content = "Đã Tắt Esp Player", Duration = 1.5})
+        end
+    end,
+})
+
+HomeTab:CreateButton({
+    Name = "🔵 ESP NPC & Entity (Gộp Chung Xanh Dương)",
+    Callback = function()
+        Config.NpcEnabled = not Config.NpcEnabled
+        if Config.NpcEnabled then
+            RayLib:Notify({Title = "Esp Tool", Content = "Đã Bật Esp NPC & Entity", Duration = 1.5})
+            RefreshEspScans()
+        else
+            for model, hl in pairs(Config.ActiveHighlights) do
+                local isPlr = false
+                pcall(function() if Players:GetPlayerFromCharacter(model) then isPlr = true end end)
+                if not isPlr and not model:IsA("Tool") then
+                    pcall(function() hl:Destroy() end)
+                    Config.ActiveHighlights[model] = nil
+                    if Config.ActiveTags[model] then
+                        pcall(function() Config.ActiveTags[model].Billboard:Destroy() end)
+                        Config.ActiveTags[model] = nil
+                    end
+                end
+            end
+            RayLib:Notify({Title = "Esp Tool", Content = "Đã Tắt Esp NPC & Entity", Duration = 1.5})
+        end
+    end,
+})
+
+-- ==========================================
+-- YÊU CẦU 2: CANTOUCH BUTTON ON/OFF CHO PLAYER (TAB HOME)
+-- ==========================================
+HomeTab:CreateSection("🖐️ CanTouch Player Config")
+
+HomeTab:CreateToggle({
+    Name = "Bật / Tắt CanTouch (Va Chạm Của Player)",
+    CurrentValue = true,
+    Flag = "PlayerCanTouchToggle",
+    Callback = function(Value)
+        Config.PlayerCanTouch = Value
+        local char = LocalPlayer.Character
+        if char then
+            for _, part in pairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanTouch = Value
+                end
+            end
+            RayLib:Notify({Title = "CanTouch", Content = "Đã " .. (Value and "BẬT" or "TẮT") .. " CanTouch của bạn!", Duration = 1.5})
+        end
+    end,
+})
+
+-- Tự động áp dụng CanTouch khi nhân vật respawn
+LocalPlayer.CharacterAdded:Connect(function(newChar)
+    task.wait(0.5)
+    if not Config.PlayerCanTouch then
+        for _, part in pairs(newChar:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanTouch = false
+            end
+        end
+    end
+end)
+
+-- ==========================================
+-- FAKE PLAYER GIAO DIỆN
+-- ==========================================
+HomeTab:CreateSection("👤 Fake Player Target (Đánh lừa NPC)")
+
+HomeTab:CreateToggle({
+    Name = "Bật / Tắt Fake Player Dummy",
+    CurrentValue = false,
+    Flag = "FakePlayerToggle",
+    Callback = function(Value)
+        Config.FakePlayerEnabled = Value
+        if Value then
+            CreateFakePlayer()
+            RayLib:Notify({Title = "Fake Player", Content = "Đã Bật Dummy ảo trên đầu player!", Duration = 1.5})
+        else
+            RemoveFakePlayer()
+            RayLib:Notify({Title = "Fake Player", Content = "Đã Tắt Dummy ảo!", Duration = 1.5})
+        end
+    end,
+})
+
+local FakeSlider
+local FakeInput
+local isUpdatingFake = false
+
+FakeSlider = HomeTab:CreateSlider({
+    Name = "Khoảng Cách Studs Lên Trên (0 - 50m)",
+    Range = {0, 50},
+    Increment = 1,
+    Suffix = " studs",
+    CurrentValue = 5,
+    Flag = "FakePlayerStudsSlider",
+    Callback = function(Value)
+        if isUpdatingFake then return end
+        Config.FakePlayerStuds = Value
+        isUpdatingFake = true
+        if FakeInput then FakeInput:Set(tostring(Value)) end
+        isUpdatingFake = false
+    end,
+})
+
+FakeInput = HomeTab:CreateInput({
+    Name = "Nhập Số Studs (0 đến 50)",
+    PlaceholderText = "Nhập studs...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = "5",
+    Flag = "FakePlayerStudsInput",
+    Callback = function(Text)
+        if isUpdatingFake then return end
+        local num = tonumber(Text)
+        if num then
+            num = math.clamp(num, 0, 50)
+            Config.FakePlayerStuds = num
+            isUpdatingFake = true
+            if FakeSlider then FakeSlider:Set(num) end
+            isUpdatingFake = false
+        end
+    end,
+})
+
+HomeTab:CreateSection("🟡 ESP Item")
+
+HomeTab:CreateButton({
+    Name = "🔄 Quét Danh Sách Item Cho ESP",
+    Callback = function()
+        local newItems = GetItemList()
+        if EspItemDropdown then EspItemDropdown:Refresh(newItems) end
+        RayLib:Notify({Title = "ESP Item", Content = "Đã cập nhật danh sách item!", Duration = 1.5})
+    end,
+})
+
+local EspItemDropdown
+EspItemDropdown = HomeTab:CreateDropdown({
+    Name = "Chọn Item Cần ESP",
+    Options = GetItemList(),
+    CurrentOption = {""},
+    MultipleOptions = false,
+    Flag = "SelectEspItemDropdown",
+    Callback = function(Option)
+        if type(Option) == "table" then Config.SelectedEspItem = Option[1]
+        else Config.SelectedEspItem = Option end
+    end,
+})
+
+HomeTab:CreateButton({
+    Name = "🟡 Bật / Tắt ESP Item Đã Chọn",
+    Callback = function()
+        Config.ItemsEnabled = not Config.ItemsEnabled
+        if Config.ItemsEnabled then
+            if not Config.SelectedEspItem or Config.SelectedEspItem == "" or Config.SelectedEspItem == "Không có item nào" then
+                RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn Item hợp lệ để ESP!", Duration = 1.5})
+                Config.ItemsEnabled = false
+                return
+            end
+            RayLib:Notify({Title = "Esp Tool", Content = "Đã Bật Esp Item: " .. Config.SelectedEspItem, Duration = 1.5})
+            RefreshEspScans()
+        else
+            for model, hl in pairs(Config.ActiveHighlights) do
+                if model:IsA("Tool") and model.Name == Config.SelectedEspItem then
+                    if Config.EspAllItemsEnabled then continue end
+                    pcall(function() hl:Destroy() end)
+                    Config.ActiveHighlights[model] = nil
+                    if Config.ActiveTags[model] then
+                        pcall(function() Config.ActiveTags[model].Billboard:Destroy() end)
+                        Config.ActiveTags[model] = nil
+                    end
+                end
+            end
+            RayLib:Notify({Title = "Esp Tool", Content = "Đã Tắt Esp Item: " .. Config.SelectedEspItem, Duration = 1.5})
+        end
+    end,
+})
+
+HomeTab:CreateButton({
+    Name = "🌟 Bật / Tắt ESP TẤT CẢ Item (All)",
+    Callback = function()
+        Config.EspAllItemsEnabled = not Config.EspAllItemsEnabled
+        if Config.EspAllItemsEnabled then
+            RayLib:Notify({Title = "Esp Tool", Content = "Đã Bật ESP Tất Cả Item", Duration = 1.5})
+            RefreshEspScans()
+        else
+            for model, hl in pairs(Config.ActiveHighlights) do
+                if model:IsA("Tool") then
+                    if Config.ItemsEnabled and model.Name == Config.SelectedEspItem then continue end
+                    pcall(function() hl:Destroy() end)
+                    Config.ActiveHighlights[model] = nil
+                    if Config.ActiveTags[model] then
+                        pcall(function() Config.ActiveTags[model].Billboard:Destroy() end)
+                        Config.ActiveTags[model] = nil
+                    end
+                end
+            end
+            RayLib:Notify({Title = "Esp Tool", Content = "Đã Tắt ESP Tất Cả Item", Duration = 1.5})
+        end
+    end,
+})
+
+HomeTab:CreateSection("📦 CanCollide Item Đang Cầm")
+
+HomeTab:CreateToggle({
+    Name = "Bật / Tắt CanCollide Item Trực Tiếp",
+    CurrentValue = false,
+    Flag = "HeldToolCanCollideToggle",
+    Callback = function(Value)
+        Config.HeldToolCanCollide = Value
+        local char = LocalPlayer.Character
+        if char then
+            local tool = char:FindFirstChildOfClass("Tool")
+            if tool then
+                for _, part in pairs(tool:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = Value
+                    end
+                end
+                RayLib:Notify({Title = "CanCollide Tool", Content = "Đã " .. (Value and "BẬT" or "TẮT") .. " va chạm cho: " .. tool.Name, Duration = 1.5})
+            else
+                RayLib:Notify({Title = "Cảnh Báo", Content = "Bạn chưa cầm item/vũ khí nào trên tay!", Duration = 1.5})
+            end
+        end
+    end,
+})
+
+HomeTab:CreateSection("🎯 Hitbox & Hurtbox Visual")
+
+HomeTab:CreateToggle({
+    Name = "Bật / Tắt Khung Hitbox 3D (Hộp Xanh)",
+    CurrentValue = false,
+    Flag = "HitboxToggle",
+    Callback = function(Value)
+        Config.HitboxEnabled = Value
+        if Value then
+            RayLib:Notify({Title = "Hitbox Visual", Content = "Đã Bật Hiển Thị Khung Hitbox 3D", Duration = 1.5})
+            UpdateHitboxes()
+        else
+            RayLib:Notify({Title = "Hitbox Visual", Content = "Đã Tắt Hiển Thị Khung Hitbox", Duration = 1.5})
+            ClearEspType(Config.ActiveHitboxes)
+        end
+    end,
+})
+
+HomeTab:CreateToggle({
+    Name = "Bật / Tắt Hurtbox 3D (Hộp Đỏ Item/Vũ Khí)",
+    CurrentValue = false,
+    Flag = "HurtboxToggle",
+    Callback = function(Value)
+        Config.HurtboxEnabled = Value
+        if Value then
+            RayLib:Notify({Title = "Hurtbox Visual", Content = "Đã Bật Khung Hurtbox Sát Thương", Duration = 1.5})
+            UpdateHurtboxes()
+        else
+            RayLib:Notify({Title = "Hurtbox Visual", Content = "Đã Tắt Khung Hurtbox", Duration = 1.5})
+            ClearEspType(Config.ActiveHurtboxes)
+        end
+    end,
+})
+
+HomeTab:CreateSection("💥 PHÓNG TO HITBOX NPC / MOBS")
+
+HomeTab:CreateToggle({
+    Name = "Bật / Tắt Phóng To Hitbox NPC & Quái",
+    CurrentValue = false,
+    Flag = "NpcExpandHitboxToggle",
+    Callback = function(Value)
+        Config.NpcExpandHitboxEnabled = Value
+        if Value then
+            RayLib:Notify({Title = "Hitbox Expander", Content = "Đã Bật Phóng To Hitbox NPC!", Duration = 1.5})
+        else
+            RayLib:Notify({Title = "Hitbox Expander", Content = "Đã Tắt & Trả Về Kích Thước Gốc NPC", Duration = 1.5})
+            RestoreOriginalNpcHitboxes()
+        end
+    end,
+})
+
+local NpcHitboxSlider
+local NpcHitboxInput
+local isUpdatingNpcHitbox = false
+
+NpcHitboxSlider = HomeTab:CreateSlider({
+    Name = "Size Hitbox NPC (2m - 50m)",
+    Range = {2, 50},
+    Increment = 1,
+    Suffix = "m",
+    CurrentValue = 10,
+    Flag = "NpcHitboxSliderFlag",
+    Callback = function(Value)
+        if isUpdatingNpcHitbox then return end
+        Config.NpcHitboxSize = Value
+        isUpdatingNpcHitbox = true
+        if NpcHitboxInput then NpcHitboxInput:Set(tostring(Value)) end
+        isUpdatingNpcHitbox = false
+    end,
+})
+
+NpcHitboxInput = HomeTab:CreateInput({
+    Name = "Nhập Kích Thước Hitbox NPC (2 đến 50)",
+    PlaceholderText = "Nhập kích thước mét...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = "10",
+    Flag = "NpcHitboxInputFlag",
+    Callback = function(Text)
+        if isUpdatingNpcHitbox then return end
+        local num = tonumber(Text)
+        if num then
+            num = math.clamp(num, 2, 50)
+            Config.NpcHitboxSize = num
+            isUpdatingNpcHitbox = true
+            if NpcHitboxSlider then NpcHitboxSlider:Set(num) end
+            isUpdatingNpcHitbox = false
+        end
+    end,
+})
+
+HomeTab:CreateSection("👀 Extra Look (Mở Rộng Zoom Camera)")
+
+HomeTab:CreateToggle({
+    Name = "Bật / Tắt Extra Look Zoom",
+    CurrentValue = false,
+    Flag = "ExtraLookToggle",
+    Callback = function(Value)
+        Config.ExtraLookEnabled = Value
+        if Value then
+            RayLib:Notify({Title = "Extra Look", Content = "Đã Bật mở rộng Camera Zoom", Duration = 1.5})
+        else
+            RayLib:Notify({Title = "Extra Look", Content = "Đã Tắt mở rộng, trả về Zoom gốc", Duration = 1.5})
+            pcall(function() LocalPlayer.CameraMaxZoomDistance = originalMaxZoom end)
+        end
+    end,
+})
+
+local ExtraLookSlider
+local ExtraLookInput
+local isUpdatingExtraLook = false
+
+ExtraLookSlider = HomeTab:CreateSlider({
+    Name = "Thêm Max Zoom (0 - 50m)",
+    Range = {0, 50},
+    Increment = 1,
+    Suffix = "m",
+    CurrentValue = 0,
+    Flag = "ExtraLookSlider",
+    Callback = function(Value)
+        if isUpdatingExtraLook then return end
+        Config.ExtraLookLength = Value * 30
+        isUpdatingExtraLook = true
+        if ExtraLookInput then ExtraLookInput:Set(tostring(Value)) end
+        isUpdatingExtraLook = false
+    end,
+})
+
+ExtraLookInput = HomeTab:CreateInput({
+    Name = "Nhập thêm Zoom (0 đến 50 mét)",
+    PlaceholderText = "Nhập mét...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = "0",
+    Flag = "ExtraLookInputFlag",
+    Callback = function(Text)
+        if isUpdatingExtraLook then return end
+        local num = tonumber(Text)
+        if num then
+            num = math.clamp(num, 0, 50)
+            Config.ExtraLookLength = num * 30
+            isUpdatingExtraLook = true
+            if ExtraLookSlider then ExtraLookSlider:Set(num) end
+            isUpdatingExtraLook = false
+        end
+    end,
+})
+
+HomeTab:CreateSection("💡 Fullbright (Sáng Màn Hình)")
+
+HomeTab:CreateToggle({
+    Name = "Bật / Tắt Fullbright",
+    CurrentValue = false,
+    Flag = "FullbrightToggle",
+    Callback = function(Value)
+        Config.FullbrightEnabled = Value
+        if Value then
+            RayLib:Notify({Title = "Fullbright", Content = "Đã Bật Sáng Màn Hình", Duration = 1.5})
+            Lighting.Brightness = 2
+            Lighting.ClockTime = 14
+            Lighting.FogEnd = 100000
+            Lighting.GlobalShadows = false
+
+            if not fullbrightConnection then
+                fullbrightConnection = RunService.RenderStepped:Connect(function()
+                    if not Config.ScriptRunning or not Config.FullbrightEnabled then return end
+                    Lighting.Brightness = 2
+                    Lighting.ClockTime = 14
+                    Lighting.FogEnd = 100000
+                    Lighting.GlobalShadows = false
+                end)
+            end
+        else
+            RayLib:Notify({Title = "Fullbright", Content = "Đã Tắt Sáng Màn Hình", Duration = 1.5})
+            if fullbrightConnection then
+                fullbrightConnection:Disconnect()
+                fullbrightConnection = nil
+            end
+            Lighting.Brightness = originalBrightness
+            Lighting.ClockTime = originalClockTime
+            Lighting.FogEnd = originalFogEnd
+            Lighting.GlobalShadows = originalGlobalShadows
+        end
+    end,
+})
+
+HomeTab:CreateSection("📏 Cài Đặt Phạm Vi ESP")
+
+local RangeSlider
+local RangeInput
+local isUpdatingRange = false
+
+RangeSlider = HomeTab:CreateSlider({
+    Name = "Phạm Vi ESP & Hitbox (Mét)",
+    Range = {50, 10000},
+    Increment = 50,
+    Suffix = "m",
+    CurrentValue = 1000,
+    Flag = "EspRangeSlider",
+    Callback = function(Value)
+        if isUpdatingRange then return end
+        Config.EspRange = Value
+        isUpdatingRange = true
+        if RangeInput then RangeInput:Set(tostring(Value)) end
+        isUpdatingRange = false
+        RefreshEspScans()
+    end,
+})
+
+RangeInput = HomeTab:CreateInput({
+    Name = "Nhập Phạm Vi ESP (1 đến 10000)",
+    PlaceholderText = "Nhập mét...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = "1000",
+    Flag = "EspRangeInputFlag",
+    Callback = function(Text)
+        if isUpdatingRange then return end
+        local num = tonumber(Text)
+        if num then
+            num = math.clamp(num, 1, 10000)
+            Config.EspRange = num
+            isUpdatingRange = true
+            if RangeSlider then RangeSlider:Set(num) end
+            isUpdatingRange = false
+            RefreshEspScans()
+        end
+    end,
+})
+
+HomeTab:CreateButton({
+    Name = "🔄 Quét Lại ESP",
+    Callback = function()
+        RefreshEspScans()
+        RayLib:Notify({Title = "ESP Tool", Content = "Đã quét lại phạm vi thành công!", Duration = 1.5})
+    end,
+})
+
+HomeTab:CreateSection("👻 NoClip & Camera")
+
+HomeTab:CreateButton({
+    Name = "👻 Bật / Tắt NoClip (Đi Xuyên Tường)",
+    Callback = function()
+        Config.NoclipEnabled = not Config.NoclipEnabled
+        local character = LocalPlayer.Character
+        
+        if Config.NoclipEnabled then
+            RayLib:Notify({Title = "NoClip", Content = "Đã Bật Đi Xuyên Tường", Duration = 1.5})
+            
+            noclipSavedStates = {}
+            if character then
+                for _, part in ipairs(character:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        noclipSavedStates[part] = part.CanCollide
+                        part.CanCollide = false
+                    end
+                end
+            end
+            
+            if not noclipConnection then
+                noclipConnection = RunService.Stepped:Connect(function()
+                    if not Config.NoclipEnabled or not Config.ScriptRunning then return end
+                    pcall(function()
+                        local currentCharacter = LocalPlayer.Character
+                        if currentCharacter then
+                            for _, part in ipairs(currentCharacter:GetDescendants()) do
+                                if part:IsA("BasePart") then
+                                    if noclipSavedStates[part] == nil then
+                                        noclipSavedStates[part] = part.CanCollide
+                                    end
+                                    part.CanCollide = false
+                                end
+                            end
+                        end
+                    end)
+                end)
+            end
+        else
+            RayLib:Notify({Title = "NoClip", Content = "Đã Tắt Đi Xuyên Tường", Duration = 1.5})
+            
+            if noclipConnection then
+                noclipConnection:Disconnect()
+                noclipConnection = nil
+            end
+            
+            pcall(function()
+                for part, originalState in pairs(noclipSavedStates) do
+                    if part and part.Parent then
+                        part.CanCollide = originalState
+                    end
+                end
+            end)
+            noclipSavedStates = {}
+        end
+    end,
+})
+
+HomeTab:CreateButton({
+    Name = "🔓 Unlock ShiftLock",
+    Callback = function()
+        pcall(function()
+            LocalPlayer.DevEnableMouseLock = true
+            RayLib:Notify({Title = "ShiftLock", Content = "Đã mở khóa ShiftLock thành công!", Duration = 1.5})
+        end)
+    end,
+})
+
+HomeTab:CreateToggle({
+    Name = "🔓 Chống Ép Góc Nhìn Thứ Nhất (Block Lockcam)",
+    CurrentValue = false,
+    Flag = "CamUnlockToggle",
+    Callback = function(Value)
+        Config.CamUnlockEnabled = Value
+        if Value then
+            pcall(function()
+                LocalPlayer.CameraMode = Enum.CameraMode.Classic
+                LocalPlayer.CameraMinZoomDistance = 0.5
+                LocalPlayer.CameraMaxZoomDistance = 128
+            end)
+            RayLib:Notify({Title = "Camera Unlock", Content = "Đã bật chống ép góc nhìn!", Duration = 1.5})
+        else
+            RayLib:Notify({Title = "Camera Unlock", Content = "Đã tắt chống ép góc nhìn!", Duration = 1.5})
+        end
+    end,
+})
+
+HomeTab:CreateSection("❌ Nút Đóng")
+
+HomeTab:CreateButton({
+    Name = "Đóng Giao Diện Script (Khôi phục Speed cũ)",
+    Callback = function()
+        pcall(closehub)
+        
+        RayLib:Notify({Title = "Esp Tool", Content = "Đã Đóng Giao Diện và Khôi Phục Speed", Duration = 1.5})
+        task.defer(function() pcall(function() RayLib:Destroy() end) end)
+    end,
+})
+
+local closehub = function()
+    -- Tắt toàn bộ Config
+    Config.ScriptRunning = false
+    Config.PlayersEnabled = false
+    Config.NpcEnabled = false
+    Config.ItemsEnabled = false
+    Config.EspAllItemsEnabled = false
+    Config.HitboxEnabled = false
+    Config.HurtboxEnabled = false
+    Config.NpcExpandHitboxEnabled = false
+    Config.ExtraLookEnabled = false
+    Config.NoclipEnabled = false
+    Config.FlyEnabled = false
+    Config.WalkSpeedEnabled = false
+    Config.JumpPowerEnabled = false
+    Config.FullbrightEnabled = false
+    Config.CamUnlockEnabled = false
+    Config.HeldToolCanCollide = false
+    Config.FakePlayerEnabled = false
+    Config.AntiAfkEnabled = false
+    Config.nodrop = false
+    Config.flyoff = false
+    Config.TweenLoopEnabled = false
+    Config.WaypointTweenLoopEnabled = false
+    
+    -- Dọn dẹp Fly & ESP
+    stopFlyingPhysics()
+    if flyConnection then pcall(function() flyConnection:Disconnect() end) flyConnection = nil end
+    CleanupAllWorkspaceEsp()
+    
+    -- Ngắt tất cả các kết nối (Connections) chạy ngầm
+    if noclipConnection then pcall(function() noclipConnection:Disconnect() end) noclipConnection = nil end
+    if keyInputConnection then pcall(function() keyInputConnection:Disconnect() end) keyInputConnection = nil end
+    if fullbrightConnection then pcall(function() fullbrightConnection:Disconnect() end) fullbrightConnection = nil end
+    if tweenLoopConnection then pcall(function() tweenLoopConnection:Disconnect() end) tweenLoopConnection = nil end
+    if fakePlayerConnection then pcall(function() fakePlayerConnection:Disconnect() end) fakePlayerConnection = nil end
+
+    -- Dọn dẹp Tween, Fake Player và No Drop Part
+    if currentTween then pcall(function() currentTween:Cancel() end) currentTween = nil end
+    if fakePlayerDummy then pcall(function() fakePlayerDummy:Destroy() end) fakePlayerDummy = nil end
+    if noDropPart then pcall(function() noDropPart:Destroy() end) noDropPart = nil end
+
+    -- Reset kích thước Hitbox NPC về ban đầu
+    for npcPart, originalSize in pairs(OriginalNpcSizes) do
+        if npcPart and npcPart.Parent then
+            pcall(function() npcPart.Size = originalSize end)
+        end
+    end
+    OriginalNpcSizes = {}
+
+    -- Khôi phục môi trường Lighting và trạng thái nhân vật
+    pcall(function()
+        Lighting.Brightness = originalBrightness
+        Lighting.ClockTime = originalClockTime
+        Lighting.FogEnd = originalFogEnd
+        Lighting.GlobalShadows = originalGlobalShadows
+        LocalPlayer.CameraMaxZoomDistance = originalMaxZoom
+
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hum then
+            hum.WalkSpeed = originalWalkSpeed
+            hum.JumpPower = originalJumpPower
+            hum.UseJumpPower = true
+            hum.PlatformStand = false
+        end
+        
+        for part, originalState in pairs(noclipSavedStates) do
+            if part and part.Parent then
+                part.CanCollide = originalState
+            end
+        end
+        noclipSavedStates = {}
+
+        if hrp then hrp.Velocity = Vector3.new(0, 0, 0) end
+    end)
+    
+    getgenv().closewithnohub = nil
+end
+
+getgenv().closewithnohub = {
+    Loaded = true,
+    CloseFunction = closehub,
+}
+
+-- ==========================================
+-- TELEPORT TAB
+-- ==========================================
+
+TeleportTab:CreateSection("👤 Teleport to Player")
+
+TeleportTab:CreateButton({
+    Name = "🔄 Quét Danh Sách Người Chơi",
+    Callback = function()
+        local newPlayers = GetPlayerList()
+        if PlayerDropdown then PlayerDropdown:Refresh(newPlayers) end
+        RayLib:Notify({Title = "TP Tool", Content = "Đã cập nhật danh sách người chơi!", Duration = 1.5})
+    end,
+})
+
+local PlayerDropdown
+local SelectedNameInput
+
+PlayerDropdown = TeleportTab:CreateDropdown({
+    Name = "Chọn Người TP",
+    Options = GetPlayerList(),
+    CurrentOption = {""},
+    MultipleOptions = false,
+    Flag = "SelectPlayerDropdown",
+    Callback = function(Option)
+        if type(Option) == "table" then Config.SelectedPlayer = Option[1]
+        else Config.SelectedPlayer = Option end
+        
+        if SelectedNameInput then
+            local nameToShow = (Config.SelectedPlayer ~= "" and Config.SelectedPlayer ~= "Không có ai") and Config.SelectedPlayer or "Chưa chọn"
+            SelectedNameInput:Set(nameToShow)
+        end
+    end,
+})
+
+SelectedNameInput = TeleportTab:CreateInput({
+    Name = "Tên người chơi đã chọn:",
+    PlaceholderText = "Tên...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = "Chưa chọn",
+    Flag = "SelectedNameDisplay",
+    Callback = function(Text)
+        if SelectedNameInput and Config.SelectedPlayer ~= "" then
+            SelectedNameInput:Set(Config.SelectedPlayer)
+        end
+    end,
+})
+
+TeleportTab:CreateButton({
+    Name = "🚀 TP Đến Người Chơi",
+    Callback = function()
+        if not Config.SelectedPlayer or Config.SelectedPlayer == "" or Config.SelectedPlayer == "Không có ai" or Config.SelectedPlayer == "Chưa chọn" then
+            RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn người chơi hợp lệ!", Duration = 1.5})
+            return
+        end
+
+        local targetPlayer = Players:FindFirstChild(Config.SelectedPlayer)
+        if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            local myChar = LocalPlayer.Character
+            if myChar and myChar:FindFirstChild("HumanoidRootPart") then
+                myChar.HumanoidRootPart.CFrame = targetPlayer.Character.HumanoidRootPart.CFrame + Vector3.new(0, 3, 0)
+                RayLib:Notify({Title = "TP Tool", Content = "Đã TP đến: " .. targetPlayer.Name, Duration = 1.5})
+            end
+        else
+            RayLib:Notify({Title = "Lỗi", Content = "Không tìm thấy nhân vật của người này!", Duration = 1.5})
+        end
+    end,
+})
+
+TeleportTab:CreateSection("🎒 Teleport to Item")
+
+TeleportTab:CreateButton({
+    Name = "🔄 Quét Item",
+    Callback = function()
+        local newItems = GetItemList()
+        if ItemDropdown then ItemDropdown:Refresh(newItems) end
+        RayLib:Notify({Title = "TP Item", Content = "Đã quét xong danh sách item!", Duration = 1.5})
+    end,
+})
+
+local ItemDropdown
+ItemDropdown = TeleportTab:CreateDropdown({
+    Name = "Chọn Item cần TP",
+    Options = GetItemList(),
+    CurrentOption = {""},
+    MultipleOptions = false,
+    Flag = "SelectItemDropdown",
+    Callback = function(Option)
+        if type(Option) == "table" then Config.SelectedItem = Option[1]
+        else Config.SelectedItem = Option end
+    end,
+})
+
+TeleportTab:CreateButton({
+    Name = "🚀 TP Item(P T I) - Player Đến Item",
+    Callback = function()
+        if not Config.SelectedItem or Config.SelectedItem == "" or Config.SelectedItem == "Không có item nào" then
+            RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn Item hợp lệ!", Duration = 1.5})
+            return
+        end
+
+        local targetPart = nil
+        pcall(function()
+            for _, obj in pairs(workspace:GetDescendants()) do
+                if obj.Name == Config.SelectedItem then
+                    if obj:IsA("Model") and obj:FindFirstChild("HumanoidRootPart") then
+                        targetPart = obj.HumanoidRootPart
+                        break
+                    elseif obj:IsA("BasePart") then
+                        targetPart = obj
+                        break
+                    elseif obj:IsA("Tool") and obj:FindFirstChild("Handle") then
+                        targetPart = obj.Handle
+                        break
+                    end
+                end
+            end
+        end)
+
+        if targetPart then
+            local myChar = LocalPlayer.Character
+            if myChar and myChar:FindFirstChild("HumanoidRootPart") then
+                myChar.HumanoidRootPart.CFrame = targetPart.CFrame + Vector3.new(0, 3, 0)
+                RayLib:Notify({Title = "TP P T I", Content = "Đã TP đến Item: " .. Config.SelectedItem, Duration = 1.5})
+            end
+        else
+            RayLib:Notify({Title = "Lỗi", Content = "Không tìm thấy vật lý item trong map!", Duration = 1.5})
+        end
+    end,
+})
+
+TeleportTab:CreateButton({
+    Name = "🧲 TP Item(I T P) - Item Kéo Tới Player",
+    Callback = function()
+        if not Config.SelectedItem or Config.SelectedItem == "" or Config.SelectedItem == "Không có item nào" then
+            RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn Item hợp lệ!", Duration = 1.5})
+            return
+        end
+
+        local targetPart = nil
+        pcall(function()
+            for _, obj in pairs(workspace:GetDescendants()) do
+                if obj.Name == Config.SelectedItem then
+                    if obj:IsA("Model") and obj:FindFirstChild("HumanoidRootPart") then
+                        targetPart = obj.HumanoidRootPart
+                        break
+                    elseif obj:IsA("BasePart") then
+                        targetPart = obj
+                        break
+                    elseif obj:IsA("Tool") and obj:FindFirstChild("Handle") then
+                        targetPart = obj.Handle
+                        break
+                    end
+                end
+            end
+        end)
+
+        if targetPart then
+            local myChar = LocalPlayer.Character
+            local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            if myHrp then
+                pcall(function()
+                    targetPart.CFrame = myHrp.CFrame + Vector3.new(0, 2, 0)
+                end)
+                RayLib:Notify({Title = "TP I T P", Content = "Đã kéo Item tới Player: " .. Config.SelectedItem, Duration = 1.5})
+            end
+        else
+            RayLib:Notify({Title = "Lỗi", Content = "Không tìm thấy item để kéo!", Duration = 1.5})
+        end
+    end,
+})
+
+TeleportTab:CreateSection("🔵 Teleport to NPC & Mob")
+
+TeleportTab:CreateButton({
+    Name = "🔄 Quét NPC & Mob",
+    Callback = function()
+        local newNpcs = GetNpcList()
+        if NpcDropdown then NpcDropdown:Refresh(newNpcs) end
+        RayLib:Notify({Title = "TP NPC", Content = "Đã quét xong danh sách NPC & Mob!", Duration = 1.5})
+    end,
+})
+
+local NpcDropdown
+NpcDropdown = TeleportTab:CreateDropdown({
+    Name = "Chọn NPC/Mob cần TP",
+    Options = GetNpcList(),
+    CurrentOption = {""},
+    MultipleOptions = false,
+    Flag = "SelectNpcDropdown",
+    Callback = function(Option)
+        if type(Option) == "table" then Config.SelectedNpc = Option[1]
+        else Config.SelectedNpc = Option end
+    end,
+})
+
+TeleportTab:CreateButton({
+    Name = "🚀 TP Tới NPC/Mob",
+    Callback = function()
+        if not Config.SelectedNpc or Config.SelectedNpc == "" or Config.SelectedNpc == "Không có NPC/Mob" then
+            RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn NPC/Mob hợp lệ!", Duration = 1.5})
+            return
+        end
+
+        local targetNpcModel = nil
+        pcall(function()
+            for _, v in pairs(workspace:GetDescendants()) do
+                if v:IsA("Model") and v.Name == Config.SelectedNpc and (IsNpc(v) or IsEntity(v)) then
+                    if v:FindFirstChild("HumanoidRootPart") or v.PrimaryPart then
+                        targetNpcModel = v
+                        break
+                    end
+                end
+            end
+        end)
+
+        if targetNpcModel then
+            local hrp = targetNpcModel:FindFirstChild("HumanoidRootPart") or targetNpcModel.PrimaryPart
+            local myChar = LocalPlayer.Character
+            if hrp and myChar and myChar:FindFirstChild("HumanoidRootPart") then
+                myChar.HumanoidRootPart.CFrame = hrp.CFrame + Vector3.new(0, 3, 0)
+                RayLib:Notify({Title = "TP NPC", Content = "Đã TP đến: " .. Config.SelectedNpc, Duration = 1.5})
+            end
+        else
+            RayLib:Notify({Title = "Lỗi", Content = "Không tìm thấy đối tượng này!", Duration = 1.5})
+        end
+    end,
+})
+
+TeleportTab:CreateButton({
+    Name = "🧲 TP NPC(N T P) - Kéo Tới Player",
+    Callback = function()
+        if not Config.SelectedNpc or Config.SelectedNpc == "" or Config.SelectedNpc == "Không có NPC/Mob" then
+            RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn mục hợp lệ!", Duration = 1.5})
+            return
+        end
+
+        local targetNpcModel = nil
+        pcall(function()
+            for _, v in pairs(workspace:GetDescendants()) do
+                if v:IsA("Model") and v.Name == Config.SelectedNpc and (IsNpc(v) or IsEntity(v)) then
+                    if v:FindFirstChild("HumanoidRootPart") or v.PrimaryPart then
+                        targetNpcModel = v
+                        break
+                    end
+                end
+            end
+        end)
+
+        if targetNpcModel then
+            local hrp = targetNpcModel:FindFirstChild("HumanoidRootPart") or targetNpcModel.PrimaryPart
+            local myChar = LocalPlayer.Character
+            local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            if hrp and myHrp then
+                pcall(function()
+                    hrp.CFrame = myHrp.CFrame + Vector3.new(0, 2, 0)
+                end)
+                RayLib:Notify({Title = "TP N T P", Content = "Đã kéo tới Player: " .. Config.SelectedNpc, Duration = 1.5})
+            end
+        else
+            RayLib:Notify({Title = "Lỗi", Content = "Không tìm thấy đối tượng để kéo!", Duration = 1.5})
+        end
+    end,
+})
+
+-- ==========================================
+-- WAYPOINT TAB
+-- ==========================================
+WaypointTab:CreateSection("📌 Quản Lý Waypoint")
+
+local waypointNameInput = ""
+WaypointTab:CreateInput({
+    Name = "Nhập Tên Waypoint",
+    PlaceholderText = "Nhập tên...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = "",
+    Flag = "WaypointNameInputFlag",
+    Callback = function(Text)
+        waypointNameInput = Text
+    end,
+})
+
+local WaypointDropdown
+WaypointDropdown = WaypointTab:CreateDropdown({
+    Name = "Chọn Waypoint",
+    Options = GetWaypointList(),
+    CurrentOption = {""},
+    MultipleOptions = false,
+    Flag = "SelectWaypointDropdown",
+    Callback = function(Option)
+        if type(Option) == "table" then Config.SelectedWaypoint = Option[1]
+        else Config.SelectedWaypoint = Option end
+    end,
+})
+
+WaypointTab:CreateButton({
+    Name = "➕ Tạo Waypoint & Show Highlight",
+    Callback = function()
+        if not waypointNameInput or waypointNameInput == "" then
+            RayLib:Notify({Title = "Lỗi", Content = "Vui lòng nhập tên waypoint!", Duration = 1.5})
+            return
+        end
+        
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then
+            RayLib:Notify({Title = "Lỗi", Content = "Không tìm thấy nhân vật!", Duration = 1.5})
+            return
+        end
+
+        Config.Waypoints[waypointNameInput] = hrp.CFrame
+        ShowWaypointHighlight(waypointNameInput, hrp.CFrame)
+
+        if WaypointDropdown then
+            WaypointDropdown:Refresh(GetWaypointList())
+        end
+
+        RayLib:Notify({Title = "Waypoint", Content = "Đã tạo & hiển thị cột sáng cho: " .. waypointNameInput, Duration = 1.5})
+    end,
+})
+
+WaypointTab:CreateButton({
+    Name = "🗑️ Xóa Waypoint Đã Chọn",
+    Callback = function()
+        if not Config.SelectedWaypoint or Config.SelectedWaypoint == "" or Config.SelectedWaypoint == "Chưa có waypoint" then
+            RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn waypoint hợp lệ để xóa!", Duration = 1.5})
+            return
+        end
+
+        local name = Config.SelectedWaypoint
+        Config.Waypoints[name] = nil
+        
+        if Config.WaypointHighlights[name] then
+            Config.WaypointHighlights[name]:Destroy()
+            Config.WaypointHighlights[name] = nil
+        end
+
+        Config.SelectedWaypoint = ""
+        if WaypointDropdown then
+            WaypointDropdown:Refresh(GetWaypointList())
+        end
+
+        RayLib:Notify({Title = "Waypoint", Content = "Đã xóa waypoint: " .. name, Duration = 1.5})
+    end,
+})
+
+WaypointTab:CreateSection("👁️ Hiển Thị / Ẩn Cột Highlight")
+
+WaypointTab:CreateButton({
+    Name = "👁️ Show All Waypoints (Hiện Tất Cả Cột Sáng)",
+    Callback = function()
+        for name, cf in pairs(Config.Waypoints) do
+            ShowWaypointHighlight(name, cf)
+        end
+        RayLib:Notify({Title = "Waypoint", Content = "Đã hiện tất cả các cột waypoint!", Duration = 1.5})
+    end,
+})
+
+WaypointTab:CreateButton({
+    Name = "🙈 Hide All Waypoints (Ẩn Tất Cả Cột Sáng)",
+    Callback = function()
+        for name, part in pairs(Config.WaypointHighlights) do
+            if part then part:Destroy() end
+        end
+        Config.WaypointHighlights = {}
+        RayLib:Notify({Title = "Waypoint", Content = "Đã ẩn tất cả các cột waypoint!", Duration = 1.5})
+    end,
+})
+
+WaypointTab:CreateButton({
+    Name = "🚀 TP Tức Thì Đến Waypoint Đã Chọn",
+    Callback = function()
+        if not Config.SelectedWaypoint or Config.SelectedWaypoint == "" or Config.SelectedWaypoint == "Chưa có waypoint" then
+            RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn waypoint để dịch chuyển!", Duration = 1.5})
+            return
+        end
+
+        local cf = Config.Waypoints[Config.SelectedWaypoint]
+        if cf then
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                hrp.CFrame = cf + Vector3.new(0, 3, 0)
+                RayLib:Notify({Title = "Waypoint", Content = "Đã TP đến: " .. Config.SelectedWaypoint, Duration = 1.5})
+            end
+        end
+    end,
+})
+
+WaypointTab:CreateSection("✈️ Tween Waypoint")
+
+local WpTweenSpeedSlider
+local WpTweenSpeedInput
+local isUpdatingWpTweenSpeed = false
+
+WpTweenSpeedSlider = WaypointTab:CreateSlider({
+    Name = "Tốc Độ Tween Waypoint (Studs/s)",
+    Range = {50, 1000},
+    Increment = 25,
+    Suffix = "s/s",
+    CurrentValue = 300,
+    Flag = "WaypointTweenSpeedSliderFlag",
+    Callback = function(Value)
+        if isUpdatingWpTweenSpeed then return end
+        Config.WaypointTweenSpeed = Value
+        isUpdatingWpTweenSpeed = true
+        if WpTweenSpeedInput then WpTweenSpeedInput:Set(tostring(Value)) end
+        isUpdatingWpTweenSpeed = false
+    end,
+})
+
+WpTweenSpeedInput = WaypointTab:CreateInput({
+    Name = "Nhập Tốc Độ Tween Waypoint (50 - 1000)",
+    PlaceholderText = "Nhập tốc độ...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = "300",
+    Flag = "WaypointTweenSpeedInputFlag",
+    Callback = function(Text)
+        if isUpdatingWpTweenSpeed then return end
+        local num = tonumber(Text)
+        if num then
+            num = math.clamp(num, 50, 1000)
+            Config.WaypointTweenSpeed = num
+            isUpdatingWpTweenSpeed = true
+            if WpTweenSpeedSlider then WpTweenSpeedSlider:Set(num) end
+            isUpdatingWpTweenSpeed = false
+        end
+    end,
+})
+
+WaypointTab:CreateButton({
+    Name = "✈️ Tween Đến Waypoint Đã Chọn (Tới là dừng)",
+    Callback = function()
+        if not Config.SelectedWaypoint or Config.SelectedWaypoint == "" or Config.SelectedWaypoint == "Chưa có waypoint" then
+            RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn waypoint để Tween!", Duration = 1.5})
+            return
+        end
+
+        local cf = Config.Waypoints[Config.SelectedWaypoint]
+        if not cf then
+            RayLib:Notify({Title = "Lỗi", Content = "Không tìm thấy tọa độ waypoint này!", Duration = 1.5})
+            return
+        end
+
+        local oldSpeed = Config.TweenSpeed
+        Config.TweenSpeed = Config.WaypointTweenSpeed
+        local oldLoop = Config.TweenLoopEnabled
+        Config.TweenLoopEnabled = false
+
+        StartTweenTo(function()
+            return cf
+        end, Config.SelectedWaypoint)
+
+        Config.TweenLoopEnabled = oldLoop
+        task.delay(0.1, function()
+            Config.TweenSpeed = oldSpeed
+        end)
+    end,
+})
+
+WaypointTab:CreateButton({
+    Name = "🔁 Tween Vĩnh Viễn / Loop Waypoint (Bám dính)",
+    Callback = function()
+        if not Config.SelectedWaypoint or Config.SelectedWaypoint == "" or Config.SelectedWaypoint == "Chưa có waypoint" then
+            RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn waypoint để Tween Loop!", Duration = 1.5})
+            return
+        end
+
+        local cf = Config.Waypoints[Config.SelectedWaypoint]
+        if not cf then
+            RayLib:Notify({Title = "Lỗi", Content = "Không tìm thấy tọa độ waypoint này!", Duration = 1.5})
+            return
+        end
+
+        local oldSpeed = Config.TweenSpeed
+        Config.TweenSpeed = Config.WaypointTweenSpeed
+        local oldLoop = Config.TweenLoopEnabled
+        Config.TweenLoopEnabled = true
+
+        StartTweenTo(function()
+            return cf
+        end, Config.SelectedWaypoint .. " (Loop)")
+
+        Config.TweenLoopEnabled = oldLoop
+        task.delay(0.1, function()
+            Config.TweenSpeed = oldSpeed
+        end)
+    end,
+})
+
+-- ==========================================
+-- MOVEMENT TAB (TÍCH HỢP NO DROP)
+-- ==========================================
+MoveTab:CreateSection("⚡ WalkSpeed")
+
+MoveTab:CreateToggle({
+    Name = "Bật / Tắt WalkSpeed",
+    CurrentValue = false,
+    Flag = "WalkSpeedToggle",
+    Callback = function(Value)
+        Config.WalkSpeedEnabled = Value
+        if Value then
+            RayLib:Notify({Title = "Speed", Content = "Đã Bật WalkSpeed", Duration = 1.5})
+        else
+            RayLib:Notify({Title = "Speed", Content = "Đã Tắt WalkSpeed", Duration = 1.5})
+            pcall(function()
+                local char = LocalPlayer.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum then hum.WalkSpeed = originalWalkSpeed end
+            end)
+        end
+    end,
+})
+
+local WalkSpeedSlider
+local WalkSpeedInput
+local isUpdatingWalk = false
+
+WalkSpeedSlider = MoveTab:CreateSlider({
+    Name = "WalkSpeed (1 - 20)",
+    Range = {1, 20},
+    Increment = 1,
+    Suffix = "x",
+    CurrentValue = 1,
+    Flag = "WalkSpeedSlider",
+    Callback = function(Value)
+        if isUpdatingWalk then return end
+        Config.WalkSpeedValue = Value
+        isUpdatingWalk = true
+        if WalkSpeedInput then WalkSpeedInput:Set(tostring(Value)) end
+        isUpdatingWalk = false
+    end,
+})
+
+WalkSpeedInput = MoveTab:CreateInput({
+    Name = "Nhập WalkSpeed (1 đến 20)",
+    PlaceholderText = "Nhập số...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = "1",
+    Flag = "WalkSpeedInputFlag",
+    Callback = function(Text)
+        if isUpdatingWalk then return end
+        local num = tonumber(Text)
+        if num then
+            num = math.clamp(num, 1, 20)
+            Config.WalkSpeedValue = num
+            isUpdatingWalk = true
+            if WalkSpeedSlider then WalkSpeedSlider:Set(num) end
+            isUpdatingWalk = false
+        end
+    end,
+})
+
+MoveTab:CreateSection("🦘 Jump Power")
+
+MoveTab:CreateToggle({
+    Name = "Bật / Tắt Jump Power",
+    CurrentValue = false,
+    Flag = "JumpPowerToggle",
+    Callback = function(Value)
+        Config.JumpPowerEnabled = Value
+        if Value then
+            RayLib:Notify({Title = "Jump", Content = "Đã Bật Jump Power", Duration = 1.5})
+        else
+            RayLib:Notify({Title = "Jump", Content = "Đã Tắt Jump Power", Duration = 1.5})
+            pcall(function()
+                local char = LocalPlayer.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    hum.JumpPower = originalJumpPower
+                    hum.UseJumpPower = true
+                end
+            end)
+        end
+    end,
+})
+
+local JumpSlider
+local JumpInput
+local isUpdatingJump = false
+
+JumpSlider = MoveTab:CreateSlider({
+    Name = "Jump Power (1 - 10)",
+    Range = {1, 10},
+    Increment = 1,
+    Suffix = "x",
+    CurrentValue = 1,
+    Flag = "JumpPowerSlider",
+    Callback = function(Value)
+        if isUpdatingJump then return end
+        Config.JumpPowerValue = Value
+        isUpdatingJump = true
+        if JumpInput then JumpInput:Set(tostring(Value)) end
+        isUpdatingJump = false
+    end,
+})
+
+JumpInput = MoveTab:CreateInput({
+    Name = "Nhập Jump Power (1 đến 10)",
+    PlaceholderText = "Nhập số...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = "1",
+    Flag = "JumpPowerInputFlag",
+    Callback = function(Text)
+        if isUpdatingJump then return end
+        local num = tonumber(Text)
+        if num then
+            num = math.clamp(num, 1, 10)
+            Config.JumpPowerValue = num
+            isUpdatingJump = true
+            if JumpSlider then JumpSlider:Set(num) end
+            isUpdatingJump = false
+        end
+    end,
+})
+
+MoveTab:CreateSection("🛑 No Drop (Chống Rơi / Đứng Lơ Lửng)")
+
+MoveTab:CreateToggle({
+    Name = "Bật / Tắt No Drop",
+    CurrentValue = false,
+    Flag = "NoDropToggleFlag",
+    Callback = function(Value)
+        Config.nodrop = Value
+        if Value then
+            RayLib:Notify({Title = "No Drop", Content = "Đã BẬT No Drop (Giữ Shift để hạ thêm 5 studs)", Duration = 1.5})
+        else
+            RayLib:Notify({Title = "No Drop", Content = "Đã TẮT No Drop", Duration = 1.5})
+        end
+    end,
+})
+
+MoveTab:CreateSection("🕊️ Fly")
+
+MoveTab:CreateDropdown({
+    Name = "Chọn Fly Mode",
+    Options = {"Fly 1", "Fly 2", "Fly 3", "Fly 4"},
+    CurrentOption = {"Fly 1"},
+    MultipleOptions = false,
+    Flag = "FlyModeDropdown",
+    Callback = function(Option)
+        if type(Option) == "table" then Config.FlyMode = Option[1] else Config.FlyMode = Option end
+        Config.FlyEnabled = false
+        Config.flyoff = false
+        stopFlyingPhysics()
+        RayLib:Notify({Title = "Fly", Content = "Đã đổi sang " .. Config.FlyMode, Duration = 1.5})
+    end,
+})
+
+MoveTab:CreateButton({
+    Name = "Fly (Bật / Tắt)",
+    Callback = function()
+        ToggleHubFly()
+    end,
+})
+
+local FlySpeedSlider
+local FlySpeedInput
+local isUpdatingFly = false
+
+FlySpeedSlider = MoveTab:CreateSlider({
+    Name = "Fly Speed (1 - 10)",
+    Range = {1, 10},
+    Increment = 1,
+    Suffix = "x",
+    CurrentValue = 1,
+    Flag = "FlySpeedSlider",
+    Callback = function(Value)
+        if isUpdatingFly then return end
+        Config.FlySpeedValue = Value
+        isUpdatingFly = true
+        if FlySpeedInput then FlySpeedInput:Set(tostring(Value)) end
+        isUpdatingFly = false
+    end,
+})
+
+FlySpeedInput = MoveTab:CreateInput({
+    Name = "Nhập Fly Speed (1 đến 10)",
+    PlaceholderText = "Nhập số...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = "1",
+    Flag = "FlySpeedInputFlag",
+    Callback = function(Text)
+        if isUpdatingFly then return end
+        local num = tonumber(Text)
+        if num then
+            num = math.clamp(num, 1, 10)
+            Config.FlySpeedValue = num
+            isUpdatingFly = true
+            if FlySpeedSlider then FlySpeedSlider:Set(num) end
+            isUpdatingFly = false
+        end
+    end,
+})
+
+-- ==========================================
+-- SETTING TAB
+-- ==========================================
+SettingTab:CreateSection("⌨️ Cài Đặt Phím Tắt Fly")
+
+SettingTab:CreateInput({
+    Name = "Phím Tắt Fly (vd: Q, E, F)",
+    PlaceholderText = "Nhập phím...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = tostring(Config.FlyKeyBind):gsub("Enum.KeyCode.", ""),
+    Callback = function(text)
+        text = text:upper():gsub("%s+", "")
+        if text ~= "" then
+            local foundKey = Enum.KeyCode[text]
+            if foundKey then
+                Config.FlyKeyBind = foundKey
+                RayLib:Notify({Title = "Fly Key", Content = "Đã đổi phím Fly thành: " .. text, Duration = 1.5})
+            else
+                RayLib:Notify({Title = "Lỗi", Content = "Không tìm thấy phím: " .. text, Duration = 1.5})
+            end
+        end
+    end,
+})
+
+SettingTab:CreateSection("🛡️ Anti-AFK (Chống Khóa / Out Game)")
+
+SettingTab:CreateToggle({
+    Name = "Bật / Tắt Anti-AFK (15 phút)",
+    CurrentValue = false,
+    Flag = "AntiAfkToggleFlag",
+    Callback = function(Value)
+        Config.AntiAfkEnabled = Value
+        antiAfkTimer = 0
+        if Value then
+            RayLib:Notify({Title = "Anti-AFK", Content = "Đã BẬT Anti-AFK", Duration = 2})
+        else
+            RayLib:Notify({Title = "Anti-AFK", Content = "Đã TẮT Anti-AFK", Duration = 1.5})
+        end
+    end,
+})
+
+-- ==========================================
+-- TWEEN TAB (YÊU CẦU 3: CẬP NHẬT REFRESH XÓA & QUÉT LẠI DANH SÁCH DROPDOWN)
+-- ==========================================
+TweenTab:CreateSection("⚙️ Cài Đặt Tốc Độ & Chế Độ Tween")
+
+TweenTab:CreateToggle({
+    Name = "🔄 Tween Loop Mode (Bám Theo Liên Tục)",
+    CurrentValue = false,
+    Flag = "TweenLoopModeToggle",
+    Callback = function(Value)
+        Config.TweenLoopEnabled = Value
+        RayLib:Notify({Title = "Tween Mode", Content = "Đã " .. (Value and "BẬT" or "TẮT") .. " chế độ Tween Loop liên tục!", Duration = 1.5})
+    end,
+})
+
+local TweenSpeedSlider
+local TweenSpeedInput
+local isUpdatingTweenSpeed = false
+
+TweenSpeedSlider = TweenTab:CreateSlider({
+    Name = "Tốc Độ Tween (Studs/s)",
+    Range = {50, 1000},
+    Increment = 25,
+    Suffix = "s/s",
+    CurrentValue = 300,
+    Flag = "TweenSpeedSliderFlag",
+    Callback = function(Value)
+        if isUpdatingTweenSpeed then return end
+        Config.TweenSpeed = Value
+        isUpdatingTweenSpeed = true
+        if TweenSpeedInput then TweenSpeedInput:Set(tostring(Value)) end
+        isUpdatingTweenSpeed = false
+    end,
+})
+
+TweenSpeedInput = TweenTab:CreateInput({
+    Name = "Nhập Tốc Độ Tween (50 - 1000)",
+    PlaceholderText = "Nhập tốc độ...",
+    RemoveTextAfterFocusLost = false,
+    CurrentValue = "300",
+    Flag = "TweenSpeedInputFlag",
+    Callback = function(Text)
+        if isUpdatingTweenSpeed then return end
+        local num = tonumber(Text)
+        if num then
+            num = math.clamp(num, 50, 1000)
+            Config.TweenSpeed = num
+            isUpdatingTweenSpeed = true
+            if TweenSpeedSlider then TweenSpeedSlider:Set(num) end
+            isUpdatingTweenSpeed = false
+        end
+    end,
+})
+
+TweenTab:CreateSection("🛑 Điều Khiển Tween")
+
+TweenTab:CreateButton({
+    Name = "🛑 Dừng Tween Ngay Lập Tức (Stop)",
+    Callback = function()
+        StopTween()
+    end,
+})
+
+TweenTab:CreateSection("👤 Tween Đến Player (Riêng)")
+
+TweenTab:CreateButton({
+    Name = "🔄 Quét Lại Người Chơi (Xóa & Cập Nhật Mới)",
+    Callback = function()
+        Config.TweenSelectedPlayer = ""
+        local newPlayers = GetPlayerList()
+        if TweenPlayerDropdown then
+            TweenPlayerDropdown:Refresh(newPlayers)
+        end
+        RayLib:Notify({Title = "🔄 Refresh", Content = "Đã xóa danh sách cũ và quét lại Player!", Duration = 1.5})
+    end,
+})
+
+local TweenPlayerDropdown
+TweenPlayerDropdown = TweenTab:CreateDropdown({
+    Name = "Chọn Người Để Tween",
+    Options = GetPlayerList(),
+    CurrentOption = {""},
+    MultipleOptions = false,
+    Flag = "TweenSelectPlayerDropdown",
+    Callback = function(Option)
+        if type(Option) == "table" then Config.TweenSelectedPlayer = Option[1]
+        else Config.TweenSelectedPlayer = Option end
+    end,
+})
+
+TweenTab:CreateButton({
+    Name = "✈️ Tween Đến Người Chơi Đã Chọn",
+    Callback = function()
+        if not Config.TweenSelectedPlayer or Config.TweenSelectedPlayer == "" or Config.TweenSelectedPlayer == "Không có ai" then
+            RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn người chơi ở mục Tween!", Duration = 1.5})
+            return
+        end
+        StartTweenTo(function()
+            local targetPlayer = Players:FindFirstChild(Config.TweenSelectedPlayer)
+            if targetPlayer and targetPlayer.Character then
+                local hrp = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then return hrp.CFrame end
+            end
+            return nil
+        end, Config.TweenSelectedPlayer)
+    end,
+})
+
+TweenTab:CreateSection("🔵 Tween Đến NPC & Mob (Riêng)")
+
+TweenTab:CreateButton({
+    Name = "🔄 Quét Lại NPC/Mob (Xóa & Cập Nhật Mới)",
+    Callback = function()
+        Config.TweenSelectedNpc = ""
+        local newNpcs = GetNpcList()
+        if TweenNpcDropdown then
+            TweenNpcDropdown:Refresh(newNpcs)
+        end
+        RayLib:Notify({Title = "🔄 Refresh", Content = "Đã xóa danh sách cũ và quét lại NPC/Mob!", Duration = 1.5})
+    end,
+})
+
+local TweenNpcDropdown
+TweenNpcDropdown = TweenTab:CreateDropdown({
+    Name = "Chọn NPC/Mob Để Tween",
+    Options = GetNpcList(),
+    CurrentOption = {""},
+    MultipleOptions = false,
+    Flag = "TweenSelectNpcDropdown",
+    Callback = function(Option)
+        if type(Option) == "table" then Config.TweenSelectedNpc = Option[1]
+        else Config.TweenSelectedNpc = Option end
+    end,
+})
+
+TweenTab:CreateButton({
+    Name = "✈️ Tween Đến NPC/Mob Đã Chọn",
+    Callback = function()
+        if not Config.TweenSelectedNpc or Config.TweenSelectedNpc == "" or Config.TweenSelectedNpc == "Không có NPC/Mob" then
+            RayLib:Notify({Title = "Lỗi", Content = "Chưa chọn mục ở mục Tween!", Duration = 1.5})
+            return
+        end
+        StartTweenTo(function()
+            for _, v in pairs(workspace:GetDescendants()) do
+                if v:IsA("Model") and v.Name == Config.TweenSelectedNpc and (IsNpc(v) or IsEntity(v)) then
+                    local hrp = v:FindFirstChild("HumanoidRootPart") or v.PrimaryPart
+                    if hrp then return hrp.CFrame end
+                end
+            end
+            return nil
+        end, Config.TweenSelectedNpc)
+    end,
+})
+
+-- ==========================================
+-- MAIN INPUT & LOOPS (XỬ LÝ PHÍM TẮT FLY & ANTI-AFK & NO DROP)
+-- ==========================================
+
+local function checkMatch(input, targetBind)
+    if not targetBind then return false end
+    if input.KeyCode ~= Enum.KeyCode.Unknown and input.KeyCode == targetBind then
+        return true
+    end
+    if input.UserInputType ~= Enum.UserInputType.Keyboard and input.UserInputType == targetBind then
+        return true
+    end
+    return false
+end
+
+keyInputConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not Config.ScriptRunning then return end
+
+    if Config.AntiAfkEnabled then
+        antiAfkTimer = 0
+    end
+
+    if checkMatch(input, Config.FlyKeyBind) then
+        ToggleHubFly()
+    end
+end)
+
+task.spawn(function()
+    while task.wait(0.05) do 
+        if not Config.ScriptRunning then break end
+        updateNoDrop()
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if not Config.ScriptRunning then break end
+
+        if Config.AntiAfkEnabled then
+            antiAfkTimer = antiAfkTimer + 1
+            if antiAfkTimer >= AFK_TIME_LIMIT then
+                antiAfkTimer = 0
+                pcall(function()
+                    game:GetService("VirtualUser"):Button1Down(Vector2.new(0,0))
+                    game:GetService("VirtualUser"):Button1Up(Vector2.new(0,0))
+                end)
+            end
+        end
+
+        local character = LocalPlayer.Character
+        local myHrp = character and character:FindFirstChild("HumanoidRootPart")
+
+        if Config.CamUnlockEnabled then
+            pcall(function()
+                LocalPlayer.CameraMode = Enum.CameraMode.Classic
+                LocalPlayer.DevComputerCameraMode = Enum.DevComputerCameraMode.Classic
+                LocalPlayer.DevTouchCameraMode = Enum.DevTouchCameraMode.Classic
+                if LocalPlayer.CameraMinZoomDistance > 1 then
+                    LocalPlayer.CameraMinZoomDistance = 0.5
+                end
+            end)
+        end
+
+        if Config.ExtraLookEnabled then
+            pcall(function()
+                LocalPlayer.CameraMaxZoomDistance = originalMaxZoom + Config.ExtraLookLength
+            end)
+        end
+
+        if Config.HitboxEnabled then
+            pcall(function() UpdateHitboxes() end)
+        end
+
+        if Config.HurtboxEnabled then
+            pcall(function() UpdateHurtboxes() end)
+        end
+
+        if Config.PlayersEnabled and myHrp then
+            for _, p in pairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer then
+                    pcall(function()
+                        if p.Character and p.Character.Parent then
+                            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+                            if hrp then
+                                local dist = math.floor((myHrp.Position - hrp.Position).Magnitude)
+                                if dist <= Config.EspRange then
+                                    ApplyHighlight(p.Character, Color3.fromRGB(0, 255, 0))
+                                    CreateEspTag(p.Character, Color3.fromRGB(0, 255, 0), "")
+                                    local tagData = Config.ActiveTags[p.Character]
+                                    if tagData and tagData.Label then
+                                        tagData.Label.Text = p.Name .. " - " .. dist .. "m"
+                                    end
+                                else
+                                    if Config.ActiveHighlights[p.Character] then
+                                        Config.ActiveHighlights[p.Character]:Destroy()
+                                        Config.ActiveHighlights[p.Character] = nil
+                                    end
+                                    if Config.ActiveTags[p.Character] then
+                                        Config.ActiveTags[p.Character].Billboard:Destroy()
+                                        Config.ActiveTags[p.Character] = nil
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                end
+            end
+        end
+    end
+end)
