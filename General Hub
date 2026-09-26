@@ -291,7 +291,7 @@ local function updateNoDrop()
         -- Yêu cầu 1: Nhấn shift thì tp block xuống thêm 5 stud ở no drop
         local dropOffset = 3.5
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
-            dropOffset = 8.5 -- 3.5 + 5 studs sâu xuống dưới
+            dropOffset = 13.6 -- 3.5 + 5 studs sâu xuống dưới
         end
         
         noDropPart.Position = hrp.Position - Vector3.new(0, dropOffset, 0)
@@ -2198,6 +2198,11 @@ MoveTab:CreateToggle({
         Config.WalkSpeedEnabled = Value
         if Value then
             RayLib:Notify({Title = "Speed", Content = "Đã Bật WalkSpeed", Duration = 1.5})
+            pcall(function()
+                local char = LocalPlayer.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum then hum.WalkSpeed = originalWalkSpeed * (Config.WalkSpeedValue or 1) end
+            end)
         else
             RayLib:Notify({Title = "Speed", Content = "Đã Tắt WalkSpeed", Duration = 1.5})
             pcall(function()
@@ -2258,14 +2263,19 @@ MoveTab:CreateToggle({
         Config.JumpPowerEnabled = Value
         if Value then
             RayLib:Notify({Title = "Jump", Content = "Đã Bật Jump Power", Duration = 1.5})
+            pcall(function()
+                local char = LocalPlayer.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    hum.UseJumpPower = true
+                   hum.JumpPower = originalJumpPower * (Config.JumpPowerValue or 1) end
+                end)
         else
             RayLib:Notify({Title = "Jump", Content = "Đã Tắt Jump Power", Duration = 1.5})
             pcall(function()
                 local char = LocalPlayer.Character
                 local hum = char and char:FindFirstChildOfClass("Humanoid")
-                if hum then
-                    hum.JumpPower = originalJumpPower
-                    hum.UseJumpPower = true
+                if hum then hum.JumpPower = originalJumpPower
                 end
             end)
         end
